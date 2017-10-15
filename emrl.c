@@ -7,10 +7,8 @@
 
 #define PRINT(str) (void)p_this->fputs(str, p_this->file)
 
-/*#define SEQ_HIDE_CURSOR	"\033?25l"*/
-/*#define SEQ_SHOW_CURSOR	"\033?25h"*/
-#define SEQ_HIDE_CURSOR	""
-#define SEQ_SHOW_CURSOR	""
+#define SEQ_HIDE_CURSOR	"\033?25l"
+#define SEQ_SHOW_CURSOR	"\033?25h"
 #define SEQ_STEP_RIGHT "\033[C"
 #define SEQ_STEP_LEFT "\033[D"
 #define SEQ_ERASE_BACK "\b \b"
