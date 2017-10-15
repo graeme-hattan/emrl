@@ -7,11 +7,19 @@
 
 #define PRINT(str) (void)p_this->fputs(str, p_this->file)
 
-#define SEQ_HIDE_CURSOR	"\033?25l"
-#define SEQ_SHOW_CURSOR	"\033?25h"
 #define SEQ_STEP_RIGHT "\033[C"
-#define SEQ_STEP_LEFT "\033[D"
-#define SEQ_ERASE_BACK "\b \b"
+#define SEQ_STEP_LEFT "\b"
+#define SEQ_DELETE_FORWARD "\033[P"
+#define SEQ_DELETE_BACK "\b\033[P"
+#define SEQ_DELETE_FROM_END "\b \b"
+#define SEQ_INSERT_SPACE "\033[@"
+
+// TODO
+// history
+// complete
+// option to build without snprintf
+// attempt to handle print errors?
+
 
 enum rp_type
 {
@@ -24,12 +32,11 @@ static inline void interpret_csi_escape(struct emrl_res *p_this);
 static inline void erase_forward(struct emrl_res *p_this);
 static inline void erase_back(struct emrl_res *p_this);
 static inline void add_string(struct emrl_res *p_this, char *p_str);
+#if !defined(USE_INSERT_ESCAPE_SEQUENCE) || !defined(USE_DELETE_ESCAPE_SEQUENCE)
 static inline void reprint_from_cursor(struct emrl_res *p_this, enum rp_type type, size_t back_mv);
+#endif
 static inline void reset_esc(struct emrl_res *p_this, bool known);
 static inline unsigned char_to_printable(unsigned char chr, char *p_print_str);
-
-// history
-// complete
 
 void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, const char *delim)
 {
@@ -37,7 +44,6 @@ void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, c
 	p_this->file = file;
 	p_this->delim = p_this->p_delim = delim;
 
-	// Set up to use caret notation when echoing unknown escape sequences
 	p_this->p_esc = p_this->esc_buf;
 	p_this->p_esc_last = p_this->esc_buf + sizeof p_this->esc_buf - 1;
 
@@ -199,7 +205,11 @@ static inline void erase_forward(struct emrl_res *p_this)
 		size_t len = p_this->p_cmd_free - p_this->p_cursor;
 		memmove(p_this->p_cursor, p_this->p_cursor+1, len);
 		--p_this->p_cmd_free;
+#ifdef USE_DELETE_ESCAPE_SEQUENCE
+		PRINT(SEQ_DELETE_FORWARD);
+#else
 		reprint_from_cursor(p_this, rp_erase, len);
+#endif
 	}
 }
 
@@ -214,7 +224,7 @@ static inline void erase_back(struct emrl_res *p_this)
 			// Yes - simple erase sequence
 			--p_this->p_cursor;
 			--p_this->p_cmd_free;
-			PRINT(SEQ_ERASE_BACK);
+			PRINT(SEQ_DELETE_FROM_END);
 		}
 		else
 		{
@@ -224,8 +234,12 @@ static inline void erase_back(struct emrl_res *p_this)
 			--p_this->p_cursor;
 			--p_this->p_cmd_free;
 
-			PRINT("\b");
+#ifdef USE_DELETE_ESCAPE_SEQUENCE
+			PRINT(SEQ_DELETE_BACK);
+#else
+			PRINT(SEQ_STEP_LEFT);
 			reprint_from_cursor(p_this, rp_erase, len+1);
+#endif
 		}
 		
 	}
@@ -253,13 +267,35 @@ static inline void add_string(struct emrl_res *p_this, char *p_str)
 			memmove(p_this->p_cursor+add_len, p_this->p_cursor, to_end_len);
 			memcpy(p_this->p_cursor, p_str, add_len);
 			p_this->p_cmd_free += add_len;
+#ifdef USE_INSERT_ESCAPE_SEQUENCE
+			char buf[16];
+			if(1 == add_len)
+			{
+				// Usually we will just insert characters as the user types
+				// Optimise this a little and save on print calls, which may be cumbersome
+				memcpy(buf, SEQ_INSERT_SPACE, sizeof SEQ_INSERT_SPACE - 1);
+				buf[sizeof SEQ_INSERT_SPACE - 1] = *p_str;
+				buf[sizeof SEQ_INSERT_SPACE] = '\0';
+				PRINT(buf);
+			}
+			else
+			{
+				// Only actually happens if we are printing unknown keys or escape sequences
+				snprintf(buf, sizeof buf, "\033[%zu@", add_len);
+				PRINT(buf);
+				PRINT(p_str);
+			}
+
+#else
 			reprint_from_cursor(p_this, rp_insert, to_end_len);
+#endif
 		}
 
 		p_this->p_cursor += add_len;	// Update internal cursor
 	}
 }
 
+#if !defined(USE_INSERT_ESCAPE_SEQUENCE) || !defined(USE_DELETE_ESCAPE_SEQUENCE)
 static inline void reprint_from_cursor(struct emrl_res *p_this, enum rp_type type, size_t back_mv)
 {
 	char out_buf[16];
@@ -268,38 +304,28 @@ static inline void reprint_from_cursor(struct emrl_res *p_this, enum rp_type typ
 	{
 		default:
 		case rp_insert:
-#ifdef EMRL_HIDE_CURSOR_DURING_REPRINT
-			(void)snprintf(out_buf, sizeof out_buf, "\033[%zuD" SEQ_SHOW_CURSOR, back_mv);
-#else
 			(void)snprintf(out_buf, sizeof out_buf, "\033[%zuD", back_mv);
-#endif
 			break;
 
 		case rp_erase:
 			// Prepend a space to the move back to cover erased char,
-#ifdef EMRL_HIDE_CURSOR_DURING_REPRINT
-			(void)snprintf(out_buf, sizeof out_buf, " \033[%zuD" SEQ_SHOW_CURSOR, back_mv);
-#else
 			(void)snprintf(out_buf, sizeof out_buf, " \033[%zuD", back_mv);
-#endif
 			break;
 	}
 
 	// Ensure buffer is null terminated before printing
 	*p_this->p_cmd_free = '\0';
-#ifdef EMRL_HIDE_CURSOR_DURING_REPRINT
-	PRINT(SEQ_HIDE_CURSOR);
-#endif
 	PRINT(p_this->p_cursor);
 	PRINT(out_buf);
 }
+#endif
 
 static inline void reset_esc(struct emrl_res *p_this, bool known)
 {
 	if(!known)
 	{
 		// Space for "^[" (ESC in caret notation),
-		// plus up to 4 bytes for each  member of esc_buf ("M-[x" possible for each)
+		// plus 4 bytes for each  member of esc_buf ("M-[x" possible for each)
 		// plus null terminator
 		char str_buf[4 * (sizeof p_this->esc_buf) + 3];
 		char *p_str = str_buf + 2;

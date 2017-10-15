@@ -5,7 +5,8 @@
 
 #define EMRL_MAX_CMD_LEN 127
 
-//#define EMRL_HIDE_CURSOR_DURING_REPRINT
+#define USE_INSERT_ESCAPE_SEQUENCE
+#define USE_DELETE_ESCAPE_SEQUENCE
 
 typedef FILE* emrl_file;
 
