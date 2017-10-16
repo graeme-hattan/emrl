@@ -7,6 +7,7 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 
+#include <assert.h>
 #include <ctype.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -27,6 +28,9 @@
 // history
 // complete
 // option to build without snprintf
+// static initialisation macro
+// utf8 support?
+// use BEL?
 // attempt to handle print errors?
 
 
@@ -46,6 +50,8 @@ static inline void reprint_from_cursor(struct emrl_res *p_this, enum rp_type typ
 #endif
 static inline void reset_esc(struct emrl_res *p_this, bool known);
 static inline unsigned char_to_printable(unsigned char chr, char *p_print_str);
+static inline char *hist_search_forward(struct emrl_res *p_this, char *p_entry);
+static inline char *hist_search_backward(struct emrl_res *p_this, char *p_entry);
 
 void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, const char *delim)
 {
@@ -59,6 +65,17 @@ void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, c
 	p_this->p_cursor = p_this->p_cmd_free = p_this->cmd_buf;
 	p_this->p_cmd_last = p_this->cmd_buf + sizeof p_this->cmd_buf - 1;
 	p_this->esc_state = emrl_esc_none;
+
+	struct emrl_history *ph = &p_this->history;
+	ph->p_oldest = ph->p_newest = NULL;
+	ph->p_put = ph->buf + 1;
+	ph->p_buf_last = ph->buf + sizeof ph->buf - 1;
+
+	// Initialise first and last byte of history buffer to zero to delimit the buffer boundaries.
+	// This enables faster searching using strchr/strrchr (as opposed to a loop with bounds checks),
+	// provided of course that no data is written to these bytes.
+	ph->buf[0] = '\0';
+	*ph->p_buf_last = '\0';
 }
 
 
@@ -91,12 +108,17 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 
 	switch(chr)
 	{
-		case EMRL_ASCII_DEL:
-			erase_back(p_this);
+		case '\r':
+		case '\n':
+			// Ignore (unless in delim string)
 			break;
 
 		case EMRL_ASCII_ESC:
 			p_this->esc_state = emrl_esc_new;
+			break;
+
+		case EMRL_ASCII_DEL:
+			erase_back(p_this);
 			break;
 
 		default:
@@ -106,6 +128,60 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 	}
 
 	return NULL;
+}
+
+
+void emrl_add_to_history(struct emrl_res *p_this, char *p_command)
+{
+	struct emrl_history *ph = &p_this->history;
+	size_t cmd_len = strlen(p_command) + 1;
+
+	if(cmd_len > (sizeof ph->buf - 2))
+		return;
+
+	ph->p_newest = ph->p_put;
+
+	// Will we overwrite the oldest member?
+	bool overwrite;
+	if(NULL == ph->p_oldest)
+	{
+		// No oldest member to overwrite, remember to initialise
+		ph->p_oldest = ph->p_newest;
+		overwrite = false;
+	}
+	else
+	{
+		// Calculate number of bytes to before we pass p_oldest
+		ptrdiff_t len_to_ovr = ph->p_put - ph->p_oldest;
+		if(len_to_ovr < 0)
+			len_to_ovr += (sizeof ph->buf - 2);
+
+		overwrite = (cmd_len > (size_t)len_to_ovr);
+	}
+
+	// Will we pass the end of the buffer?
+	size_t len_to_wrap = ph->p_buf_last - ph->p_put;
+	if(cmd_len <= len_to_wrap)
+	{
+		// No, one copy needed
+		(void)memcpy(ph->p_put, p_command, cmd_len);
+		ph->p_put += cmd_len;
+
+		// Pre-wrap p_put since it is used to update p_newest
+		if(ph->p_put == ph->p_buf_last)
+			ph->p_put = ph->buf + 1;
+	}
+	else
+	{
+		// Yes, two copies needed
+		(void)memcpy(ph->p_put, p_command, len_to_wrap);
+		cmd_len -= len_to_wrap;
+		(void)memcpy(ph->buf+1, p_command+len_to_wrap, cmd_len);
+		ph->p_put = ph->buf + 1 + cmd_len;
+	}
+
+	if(overwrite)
+		ph->p_oldest = hist_search_forward(p_this, ph->p_put);
 }
 
 
@@ -212,7 +288,7 @@ static inline void erase_forward(struct emrl_res *p_this)
 	{
 		// No - remove character under cursor and reprint
 		size_t len = p_this->p_cmd_free - p_this->p_cursor;
-		memmove(p_this->p_cursor, p_this->p_cursor+1, len);
+		(void)memmove(p_this->p_cursor, p_this->p_cursor+1, len);
 		--p_this->p_cmd_free;
 #ifdef USE_DELETE_ESCAPE_SEQUENCE
 		PRINT(SEQ_DELETE_FORWARD);
@@ -239,7 +315,7 @@ static inline void erase_back(struct emrl_res *p_this)
 		{
 			// No - remove character before cursor and reprint
 			size_t len = p_this->p_cmd_free - p_this->p_cursor;
-			memmove(p_this->p_cursor-1, p_this->p_cursor, len);
+			(void)memmove(p_this->p_cursor-1, p_this->p_cursor, len);
 			--p_this->p_cursor;
 			--p_this->p_cmd_free;
 
@@ -265,16 +341,16 @@ static inline void add_string(struct emrl_res *p_this, char *p_str)
 		if(p_this->p_cursor == p_this->p_cmd_free)
 		{
 			// Yes - simple append
-			memcpy(p_this->p_cmd_free, p_str, add_len);
+			(void)memcpy(p_this->p_cmd_free, p_str, add_len);
 			p_this->p_cmd_free += add_len;
 			PRINT(p_str);
 		}
 		else
 		{
-			// No - insert and reprint from cursor
+			// No - insert
 			size_t to_end_len = p_this->p_cmd_free - p_this->p_cursor;
-			memmove(p_this->p_cursor+add_len, p_this->p_cursor, to_end_len);
-			memcpy(p_this->p_cursor, p_str, add_len);
+			(void)memmove(p_this->p_cursor+add_len, p_this->p_cursor, to_end_len);
+			(void)memcpy(p_this->p_cursor, p_str, add_len);
 			p_this->p_cmd_free += add_len;
 #ifdef USE_INSERT_ESCAPE_SEQUENCE
 			char buf[16];
@@ -282,7 +358,7 @@ static inline void add_string(struct emrl_res *p_this, char *p_str)
 			{
 				// Usually we will just insert characters as the user types
 				// Optimise this a little and save on print calls, which may be cumbersome
-				memcpy(buf, SEQ_INSERT_SPACE, sizeof SEQ_INSERT_SPACE - 1);
+				(void)memcpy(buf, SEQ_INSERT_SPACE, sizeof SEQ_INSERT_SPACE - 1);
 				buf[sizeof SEQ_INSERT_SPACE - 1] = *p_str;
 				buf[sizeof SEQ_INSERT_SPACE] = '\0';
 				PRINT(buf);
@@ -388,4 +464,45 @@ static inline unsigned char_to_printable(unsigned char chr, char *p_print_str)
 	*p_print_str = '\0';
 
 	return len;
+}
+
+static inline char *hist_search_forward(struct emrl_res *p_this, char *p_entry)
+{
+	assert(p_entry > p_this->history.buf);
+	assert(p_entry <= p_this->history.p_buf_last);		// May be equal when updating p_oldest
+
+	p_entry = strchr(p_entry, '\0');
+
+	// Hit end of buffer? Keep searching from start
+	if(p_entry == p_this->history.p_buf_last)
+		p_entry = strchr(p_this->history.buf+1, '\0');
+
+	++p_entry;											// Skip past string terminator
+
+	// Did previous entry go right to the end of the buffer, wrap if so
+	if(p_entry == p_this->history.p_buf_last)
+		p_entry = p_this->history.buf + 1;
+
+	return p_entry;
+}
+
+static inline char *hist_search_backward(struct emrl_res *p_this, char *p_entry)
+{
+	assert(p_entry > p_this->history.buf);
+	assert(p_entry < p_this->history.p_buf_last);
+
+	// Is the entry at the start of the buffer?
+	if(p_entry-1 == p_this->history.buf)
+		p_entry = p_this->history.p_buf_last - 2;	// Previous null at end, start before it
+	else
+		p_entry -= 2;								// Go back past null of previous entry
+
+	p_entry = strrchr(p_entry, '\0');
+
+	// Hit start of buffer? Keep searching from end
+	if(p_entry == p_this->history.buf)
+		p_entry = strrchr(p_this->history.p_buf_last-1, '\0');
+
+	// Entry starts after the null
+	return p_entry + 1;
 }

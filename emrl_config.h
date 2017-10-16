@@ -13,6 +13,7 @@
 #include <stdio.h>
 
 #define EMRL_MAX_CMD_LEN 127
+#define EMRL_HISTORY_BUF_BYTES 64
 
 #define USE_INSERT_ESCAPE_SEQUENCE
 #define USE_DELETE_ESCAPE_SEQUENCE

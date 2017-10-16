@@ -29,9 +29,19 @@ enum emrl_esc
 	emrl_esc_csi
 };
 
+struct emrl_history
+{
+	char *p_oldest;
+	char *p_newest;
+	char *p_put;
+	char *p_buf_last;
+	char buf[EMRL_HISTORY_BUF_BYTES];
+};
+
 // emrl resources
 struct emrl_res
 {
+	struct emrl_history history;
 	emrl_fputs_func fputs;
 	emrl_file file;
 	const char *delim;
@@ -48,5 +58,6 @@ struct emrl_res
 
 void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, const char *delim);
 char *emrl_process_char(struct emrl_res *p_this, char chr);
+void emrl_add_to_history(struct emrl_res *p_this, char *p_command);
 
 #endif	/* EMRL_H */
