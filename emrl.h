@@ -33,6 +33,7 @@ struct emrl_history
 {
 	char *p_oldest;
 	char *p_newest;
+	char *p_current;
 	char *p_put;
 	char *p_buf_last;
 	char buf[EMRL_HISTORY_BUF_BYTES];
