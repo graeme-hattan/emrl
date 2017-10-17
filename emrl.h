@@ -12,8 +12,6 @@
 
 #include "emrl_config.h"
 
-#define EMRL_MAX_CMD_LEN 127
-
 #define EMRL_ASCII_ETX 3
 #define EMRL_ASCII_EOT 4
 #define EMRL_ASCII_ESC 27
@@ -35,6 +33,7 @@ struct emrl_history
 	char *p_newest;
 	char *p_current;
 	char *p_put;
+	char *p_cmd_free_bak;
 	char *p_buf_last;
 	char buf[EMRL_HISTORY_BUF_BYTES];
 };

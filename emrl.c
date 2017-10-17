@@ -55,6 +55,8 @@ static inline char *hist_search_backward(struct emrl_res *p_this, char *p_entry)
 static inline void hist_show_prev(struct emrl_res *p_this);
 static inline void hist_show_next(struct emrl_res *p_this);
 static inline void hist_show_current(struct emrl_res *p_this);
+static inline void clear_from_prompt(struct emrl_res *p_this);
+static inline void copy_on_edit(struct emrl_res *p_this);
 static inline unsigned char_to_printable(unsigned char chr, char *p_print_str);
 
 void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, const char *delim)
@@ -276,7 +278,7 @@ static inline void interpret_csi_escape(struct emrl_res *p_this)
 	}
 	else if(3 == len)
 	{
-		if(0 == strncmp(p_this->esc_buf+1, "3~", 2))
+		if(0 == memcmp(p_this->esc_buf+1, "3~", 2))
 			erase_forward(p_this);
 		else
 			known = false;
@@ -295,6 +297,7 @@ static inline void erase_forward(struct emrl_res *p_this)
 	if(p_this->p_cursor != p_this->p_cmd_free)
 	{
 		// No - remove character under cursor
+		copy_on_edit(p_this);
 		size_t len = p_this->p_cmd_free - p_this->p_cursor;
 		(void)memmove(p_this->p_cursor, p_this->p_cursor+1, len);
 		--p_this->p_cmd_free;
@@ -311,6 +314,8 @@ static inline void erase_back(struct emrl_res *p_this)
 	// Are we at the start of the line? Don't erase the prompt!
 	if(p_this->p_cursor != p_this->cmd_buf)
 	{
+		copy_on_edit(p_this);
+
 		// Are we at the end of the line?
 		if(p_this->p_cursor == p_this->p_cmd_free)
 		{
@@ -345,6 +350,8 @@ static inline void add_string(struct emrl_res *p_this, char *p_str)
 	// Enough space in the command buffer?
 	if((p_this->p_cmd_last - p_this->p_cmd_free) > (ptrdiff_t)add_len)
 	{
+		copy_on_edit(p_this);
+
 		// Are we at the end of the line?
 		if(p_this->p_cursor == p_this->p_cmd_free)
 		{
@@ -497,9 +504,14 @@ static inline void hist_show_prev(struct emrl_res *p_this)
 	if(NULL != ph->p_newest && ph->p_current != ph->p_oldest)
 	{
 		if(NULL == ph->p_current)
+		{
 			ph->p_current = ph->p_newest;
+			ph->p_cmd_free_bak = p_this->p_cmd_free;
+		}
 		else
+		{
 			ph->p_current = hist_search_backward(p_this, ph->p_current);
+		}
 
 		hist_show_current(p_this);
 	}
@@ -509,10 +521,31 @@ static inline void hist_show_next(struct emrl_res *p_this)
 {
 	struct emrl_history *ph = &p_this->history;
 
-	if(ph->p_current != ph->p_newest)
+	// Is history search active?
+	if(NULL != ph->p_current)
 	{
-		ph->p_current = hist_search_forward(p_this, ph->p_current);
-		hist_show_current(p_this);
+		// Are we already at the newest entry?
+		if(ph->p_current == ph->p_newest)
+		{
+			// Yes, drop out of history search and display original command
+			ph->p_current = NULL;
+
+			clear_from_prompt(p_this);
+			p_this->p_cursor = p_this->p_cmd_free = ph->p_cmd_free_bak;
+
+			// Print command text, if there is any to print
+			if(p_this->p_cmd_free > p_this->cmd_buf)
+			{
+				*p_this->p_cmd_free = '\0';
+				PRINT(p_this->cmd_buf);
+			}
+		}
+		else
+		{
+			// No, show next newest entry
+			ph->p_current = hist_search_forward(p_this, ph->p_current);
+			hist_show_current(p_this);
+		}
 	}
 }
 
@@ -520,15 +553,9 @@ static inline void hist_show_current(struct emrl_res *p_this)
 {
 	struct emrl_history *ph = &p_this->history;
 
-	// Clear everything after prompt
-	ptrdiff_t cmd_len = p_this->p_cursor-p_this->cmd_buf;
-	if(cmd_len > 0)
-	{
-		char out_buf[16];
-		(void)snprintf(out_buf, sizeof out_buf, "\033[%tdD" SEQ_ERASE_TO_END, cmd_len);
-		PRINT(out_buf);
-	}
+	assert(NULL != ph->p_current);
 
+	clear_from_prompt(p_this);
 	PRINT(ph->p_current);
 	size_t len = strlen(ph->p_current);
 	if(ph->p_current + len == ph->p_buf_last)
@@ -537,8 +564,40 @@ static inline void hist_show_current(struct emrl_res *p_this)
 		len += strlen(ph->buf + 1);
 	}
 
-	// TODO, quick hack for now...
-	p_this->p_cursor = p_this->cmd_buf + len;
+	// Set p_cmd_free so that arrow movement behaves like cmd_buf contains the history entry,
+	// but don't overwrite anything until the user edits or presses return
+	p_this->p_cursor = p_this->p_cmd_free = p_this->cmd_buf + len;
+}
+
+static inline void clear_from_prompt(struct emrl_res *p_this)
+{
+	ptrdiff_t back_mv = p_this->p_cursor-p_this->cmd_buf;
+	if(back_mv > 0)
+	{
+		char out_buf[16];
+		(void)snprintf(out_buf, sizeof out_buf, "\033[%tdD" SEQ_ERASE_TO_END, back_mv);
+		PRINT(out_buf);
+	}
+}
+
+static inline void copy_on_edit(struct emrl_res *p_this)
+{
+	struct emrl_history *ph = &p_this->history;
+
+	// History search active?
+	if(NULL != ph->p_current)
+	{
+		// Yes, copy current history entry to the command buffer for editing or return
+		size_t len = strlen(ph->p_current);
+		(void)memcpy(p_this->cmd_buf, ph->p_current, len);
+		if(ph->p_current + len == ph->p_buf_last)
+			strcpy(p_this->cmd_buf + len, ph->buf + 1);
+
+		// p_cmd_free should already point to the end of the command
+
+		// Exit history search
+		ph->p_current = NULL;
+	}
 }
 
 static inline unsigned char_to_printable(unsigned char chr, char *p_print_str)
