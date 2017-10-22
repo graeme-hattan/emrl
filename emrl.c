@@ -26,10 +26,13 @@
 #define SEQ_ERASE_TO_END "\033[K"
 
 // TODO
-// history
-// complete
+// baud rate simulation in examples
+// more history api -> help choose what to add
+// completion
 // option to build without snprintf
 // static initialisation macro
+// recognise more keys - insert, pgup, pgdown, home, end
+// C++
 // utf8 support?
 // use BEL?
 // attempt to handle print errors?

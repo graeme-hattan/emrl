@@ -1,3 +1,8 @@
+#define _XOPEN_SOURCE 600
+
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -5,21 +10,109 @@
 
 #define PROMPT "emrl>"
 
-int main(void)
-{
-	struct termios term_orig, term_emrl;
-	struct emrl_res emrl;
-	int chr;
-	char *pCommand;
+#define USAGE		(1<<0)
+#define PTY_MODE	(1<<1)
 
-	// Save the original terminal attributes
-	if(tcgetattr(STDIN_FILENO, &term_orig) < 0)
+static inline void perror_exit(const char *info);
+static inline int setup_pty(void);
+static inline void configure_terminal(int fd, struct termios *p_term_orig);
+static inline void emrl_loop(FILE *in_stream, FILE *out_stream);
+
+int main(int argc, char *argv[])
+{
+	int opt;
+	unsigned flags = 0;
+	while(!(flags & USAGE) && (opt = getopt(argc, argv, "p")) != -1)
 	{
-		perror("tcgetattr orig");
-		return 1;
+		switch(opt)
+		{
+			default:
+			case '?':
+				flags |= USAGE;
+				break;
+
+			case 'p':
+				flags |= PTY_MODE;
+				break;
+		}
 	}
 
-	term_emrl = term_orig;
+	if(flags & USAGE || optind < argc)
+	{
+		char *prog_name = argc > 0 ? argv[0] : "posix";
+		(void)fprintf(stderr, "usage: %s: [-p]\n", prog_name);
+		return EXIT_FAILURE;
+	}
+
+	int fd;
+	FILE *in_stream, *out_stream;
+	if(flags & PTY_MODE)
+	{
+		fd = setup_pty();
+
+		in_stream = fdopen(fd, "r");
+		if(NULL == in_stream)
+			perror_exit("fdopen in_stream");
+
+		out_stream = fdopen(fd, "w");
+		if(NULL == out_stream)
+			perror_exit("fdopen out_stream");
+	}
+	else
+	{
+		fd = STDIN_FILENO;
+		in_stream = stdin;
+		out_stream = stdout;
+	}
+
+	struct termios term_orig;
+	configure_terminal(fd, &term_orig);
+
+	emrl_loop(in_stream, out_stream);
+
+	// Restore original terminal settings
+	if(tcsetattr(fd, TCSAFLUSH, &term_orig) < 0)
+		perror_exit("tcsetattr orig");
+
+	return EXIT_SUCCESS;
+}
+
+static inline void perror_exit(const char *info)
+{
+	perror(info);
+	exit(EXIT_FAILURE);
+}
+
+static inline int setup_pty(void)
+{
+	int fd = posix_openpt(O_RDWR|O_NOCTTY);
+	if(fd < 0)
+		perror_exit("posix_openpt");
+
+	if(grantpt(fd) < 0)
+		perror_exit("grantpt");
+
+	if(unlockpt(fd) < 0)
+		perror_exit("unlockpt");
+
+	char *slave_name = ptsname(fd);
+	if(NULL == slave_name)
+		perror_exit("ptsname");
+
+	printf("Connect terminal emulator to %s\n", slave_name);
+
+	return fd;
+}
+
+static inline void configure_terminal(int fd, struct termios *p_term_orig)
+{
+	struct termios term_emrl;
+
+	// Save the original terminal attributes
+	if(tcgetattr(fd, p_term_orig) < 0)
+		perror_exit("tcgetattr orig");
+
+	term_emrl = *p_term_orig;
 
 	term_emrl.c_iflag = 0;
 	term_emrl.c_oflag = 0;
@@ -32,24 +125,26 @@ int main(void)
 	term_emrl.c_cc[VMIN] = 1;
 	term_emrl.c_cc[VTIME] = 0;
 
-	if(tcsetattr(STDIN_FILENO, TCSANOW, &term_emrl) < 0)
-	{
-		perror("tcsetattr raw");
-		return 1;
-	}
+	if(tcsetattr(fd, TCSANOW, &term_emrl) < 0)
+		perror_exit("tcsetattr emrl");
+}
 
-	// Initialise emrl, use fputs to write to stdout, '\r' is line delimiter
-	emrl_init(&emrl, fputs, stdout, "\r");
+static inline void emrl_loop(FILE *in_stream, FILE *out_stream)
+{
+	// Initialise emrl, use fputs to write to out_stream, '\r' is line delimiter
+	struct emrl_res emrl;
+	emrl_init(&emrl, fputs, out_stream, "\r");
 
 	// Write a prompt
-	fputs(PROMPT, stdout);
-	fflush(stdout);
+	(void)fputs(PROMPT, out_stream);
+	(void)fflush(out_stream);
 
 	// Read characters until EOF or error
-	while(read(STDIN_FILENO, &chr, 1) > 0 && EMRL_ASCII_EOT != chr)
+	int chr = fgetc(in_stream);
+	while(EOF != chr && EMRL_ASCII_EOT != chr)
 	{
 		// Feed character to emrl
-		pCommand = emrl_process_char(&emrl, (char)chr);
+		char *pCommand = emrl_process_char(&emrl, (char)chr);
 
 		// If return value is non-null, emrl matched the delimiter and return the command text
 		if(NULL != pCommand)
@@ -58,24 +153,22 @@ int main(void)
 			if('\0' != pCommand[0])
 			{
 				// Print the command text under the command line and add it to history
-				printf("\r\n>>>>>%s", pCommand);
+				(void)fprintf(out_stream, "\r\n>>>>>%s", pCommand);
 				emrl_add_to_history(&emrl, pCommand);
 			}
 
 			// Write the prompt
-			fputs("\r\n" PROMPT, stdout);
+			(void)fputs("\r\n" PROMPT, out_stream);
 		}
 
 		// Must flush since stdout is still line buffered
-		fflush(stdout);
+		(void)fflush(out_stream);
+		chr = fgetc(in_stream);
 	}
 
-	// Restore original terminal settings
-	if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &term_orig) < 0)
+	if(ferror(in_stream))
 	{
-		perror("tcsetattr orig");
-		return 1;
+		fputs("in stream error\n", stderr);
+		exit(EXIT_FAILURE);
 	}
-
-	return 0;
 }
