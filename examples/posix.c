@@ -99,6 +99,12 @@ static inline int setup_pty(void)
 	if(NULL == slave_name)
 		perror_exit("ptsname");
 
+	// On Linux we get an EIO when the last process using the slave closes it, holding another file
+	// descriptor for it prevents this and allows the device to be reused. Hopefully this won't
+	// cause problems on other platforms.
+	if(open(slave_name, O_RDWR|O_NOCTTY) < 0)
+		perror_exit("slave open");
+
 	printf("Connect terminal emulator to %s\n", slave_name);
 
 	return fd;
@@ -141,7 +147,7 @@ static inline void emrl_loop(FILE *in_stream, FILE *out_stream)
 
 	// Read characters until EOF or error
 	int chr = fgetc(in_stream);
-	while(EOF != chr && EMRL_ASCII_EOT != chr)
+	while(EOF != chr)
 	{
 		// Feed character to emrl
 		char *pCommand = emrl_process_char(&emrl, (char)chr);
@@ -166,9 +172,7 @@ static inline void emrl_loop(FILE *in_stream, FILE *out_stream)
 		chr = fgetc(in_stream);
 	}
 
+	// If fgetc set the error indicator, it was probably doing a read which means errno will set
 	if(ferror(in_stream))
-	{
-		fputs("in stream error\n", stderr);
-		exit(EXIT_FAILURE);
-	}
+		perror_exit("fgetc (read fail?)");
 }
