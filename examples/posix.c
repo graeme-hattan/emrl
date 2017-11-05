@@ -1,54 +1,99 @@
 #define _XOPEN_SOURCE 600
 
+#include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
+#include <signal.h>
+#include <string.h>
 #include <termios.h>
 #include <unistd.h>
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
 #include "emrl.h"
 
+#define DEFAULT_SOCKET_PATH "/tmp/emrl-socket"
 #define PROMPT "emrl>"
 
-#define USAGE		(1<<0)
-#define PTY_MODE	(1<<1)
+enum mode
+{
+	mode_local,
+	mode_pty,
+	mode_socket
+};
 
 static inline void perror_exit(const char *info);
+static inline void install_cleanup_handlers(void);
 static inline int setup_pty(void);
-static inline void configure_terminal(int fd, struct termios *p_term_orig);
+static inline int setup_socket(void);
+static inline void configure_terminal(int fd, enum mode mode);
 static inline void emrl_loop(FILE *in_stream, FILE *out_stream);
+static void cleanup(void);
+static void signal_exit(int signum);
+
+static volatile sig_atomic_t reset_stdin = 0;
+static struct termios term_orig;
+
+static volatile sig_atomic_t unlink_sock_path = 0;
+static const char *sock_path = DEFAULT_SOCKET_PATH;
 
 int main(int argc, char *argv[])
 {
 	int opt;
-	unsigned flags = 0;
-	while(!(flags & USAGE) && (opt = getopt(argc, argv, "p")) != -1)
+	bool usage = false;
+	enum mode mode = mode_local;
+	while(!usage && (opt = getopt(argc, argv, ":ps:")) != -1)
 	{
+		bool missing_arg = (opt == ':');
+		if(missing_arg)
+			opt = optopt;
+
 		switch(opt)
 		{
 			default:
 			case '?':
-				flags |= USAGE;
+				usage = true;
 				break;
 
 			case 'p':
-				flags |= PTY_MODE;
+				mode = mode_pty;
+				break;
+
+			case 's':
+				mode = mode_socket;
+				if(!missing_arg)
+					sock_path = optarg;
 				break;
 		}
 	}
 
-	if(flags & USAGE || optind < argc)
+	if(usage || optind < argc)
 	{
-		char *prog_name = argc > 0 ? argv[0] : "posix";
-		(void)fprintf(stderr, "usage: %s: [-p]\n", prog_name);
+		char *prog_path = (argc > 0) ? (argv[0]) : ("posix");
+		(void)fprintf(stderr, "usage: %s: [-p | -s [socket_path]]\n", prog_path);
 		return EXIT_FAILURE;
 	}
+	
+	install_cleanup_handlers();
 
 	int fd;
 	FILE *in_stream, *out_stream;
-	if(flags & PTY_MODE)
+	if(mode_local == mode)
 	{
-		fd = setup_pty();
+		fd = STDIN_FILENO;
+		in_stream = stdin;
+		out_stream = stdout;
+	}
+	else
+	{
+		if(mode_pty == mode)
+			fd = setup_pty();
+		else
+			fd = setup_socket();
 
 		in_stream = fdopen(fd, "r");
 		if(NULL == in_stream)
@@ -58,23 +103,50 @@ int main(int argc, char *argv[])
 		if(NULL == out_stream)
 			perror_exit("fdopen out_stream");
 	}
-	else
-	{
-		fd = STDIN_FILENO;
-		in_stream = stdin;
-		out_stream = stdout;
-	}
 
-	struct termios term_orig;
-	configure_terminal(fd, &term_orig);
+	if(mode_socket != mode)
+		configure_terminal(fd, mode);
 
 	emrl_loop(in_stream, out_stream);
 
-	// Restore original terminal settings
-	if(tcsetattr(fd, TCSAFLUSH, &term_orig) < 0)
-		perror_exit("tcsetattr orig");
-
 	return EXIT_SUCCESS;
+}
+
+static inline void install_cleanup_handlers(void)
+{
+	// Handle the standard termination signals that don't cause a core dump
+	struct sigaction action = {
+		.sa_handler = signal_exit,
+		.sa_flags = SA_RESETHAND
+	};
+
+	// Mask the signals we are handling to avoid repeated cleanups
+	if(sigemptyset(&action.sa_mask))
+		perror("sigfillset");
+
+	if(sigaddset(&action.sa_mask, SIGINT) < 0)
+		perror_exit("sigaddset SIGINT");
+
+	if(sigaddset(&action.sa_mask, SIGTERM) < 0)
+		perror_exit("sigaddset SIGTERM");
+
+	if(sigaddset(&action.sa_mask, SIGHUP) < 0)
+		perror_exit("sigaddset SIGHUP");
+
+
+	if(sigaction(SIGINT, &action, NULL) < 0)
+		perror_exit("sigaction SIGINT");
+
+	if(sigaction(SIGTERM, &action, NULL) < 0)
+		perror_exit("sigaction SIGTERM");
+
+	if(sigaction(SIGHUP, &action, NULL) < 0)
+		perror_exit("sigaction SIGHUP");
+
+
+	// Register cleanup function to be called at exit
+	if(atexit(cleanup) < 0)
+		perror_exit("atexit");
 }
 
 static inline void perror_exit(const char *info)
@@ -95,30 +167,86 @@ static inline int setup_pty(void)
 	if(unlockpt(fd) < 0)
 		perror_exit("unlockpt");
 
-	char *slave_name = ptsname(fd);
-	if(NULL == slave_name)
+	char *slave_path = ptsname(fd);
+	if(NULL == slave_path)
 		perror_exit("ptsname");
 
 	// On Linux we get an EIO when the last process using the slave closes it, holding another file
 	// descriptor for it prevents this and allows the device to be reused. Hopefully this won't
 	// cause problems on other platforms.
-	if(open(slave_name, O_RDWR|O_NOCTTY) < 0)
+	if(open(slave_path, O_RDWR|O_NOCTTY) < 0)
 		perror_exit("slave open");
 
-	printf("Connect terminal emulator to %s\n", slave_name);
+	printf("Connect to device '%s'\n", slave_path);
 
 	return fd;
 }
 
-static inline void configure_terminal(int fd, struct termios *p_term_orig)
+static inline int setup_socket(void)
+{
+	assert(NULL != sock_path);
+
+	// Create a socket to listen on
+	int sock_listen = socket(AF_UNIX, SOCK_STREAM, 0);
+	if(sock_listen < 0) 
+		perror_exit("socket");
+
+	// Bind the socket to a filesystem path
+	struct sockaddr_un addr = {
+		.sun_family = AF_UNIX,
+		.sun_path = {0}
+	};
+
+	size_t path_len = strlen(sock_path);
+	if(path_len >= sizeof addr.sun_path)
+	{
+		fprintf(stderr,
+		        "Socket bind path '%s' too long, must be %zu chars max\n",
+		        sock_path,
+		        sizeof addr.sun_path - 1);
+	}
+
+	memcpy(addr.sun_path, sock_path, path_len);
+	if(bind(sock_listen, (struct sockaddr*)&addr, sizeof addr) < 0)
+	{
+		if(EADDRINUSE == errno)
+		{
+			fprintf(stderr, "Path '%s' already exists\n", sock_path);
+			exit(EXIT_FAILURE);
+		}
+		else
+		{
+			perror_exit("bind");
+		}
+	}
+
+	// Set a flag to remove the bound path at exit
+	// Race condition here, very unlikely though
+	unlink_sock_path = 1;
+
+	// Start listening for connections
+	if(listen(sock_listen, 1) < 0)
+		perror_exit("listen");
+	
+	printf("Connect to socket '%s'\n", sock_path);
+
+	// Wait for an incoming connection
+	int sock_data = accept(sock_listen, NULL, NULL);
+	if(sock_data < 0)
+		perror_exit("accept");
+       
+	return sock_data;
+}
+
+static inline void configure_terminal(int fd, enum mode mode)
 {
 	struct termios term_emrl;
 
 	// Save the original terminal attributes
-	if(tcgetattr(fd, p_term_orig) < 0)
+	if(tcgetattr(fd, &term_orig) < 0)
 		perror_exit("tcgetattr orig");
 
-	term_emrl = *p_term_orig;
+	term_emrl = term_orig;
 
 	term_emrl.c_iflag = 0;
 	term_emrl.c_oflag = 0;
@@ -130,6 +258,10 @@ static inline void configure_terminal(int fd, struct termios *p_term_orig)
 	// Make read block until one byte is available
 	term_emrl.c_cc[VMIN] = 1;
 	term_emrl.c_cc[VTIME] = 0;
+
+	// Set a flag to ensure the local terminal settings get restored at exit if we are changing them
+	if(mode_local == mode)
+		reset_stdin = 1;
 
 	if(tcsetattr(fd, TCSANOW, &term_emrl) < 0)
 		perror_exit("tcsetattr emrl");
@@ -175,4 +307,31 @@ static inline void emrl_loop(FILE *in_stream, FILE *out_stream)
 	// If fgetc set the error indicator, it was probably doing a read which means errno will set
 	if(ferror(in_stream))
 		perror_exit("fgetc (read fail?)");
+}
+
+static void cleanup(void)
+{
+	if(reset_stdin)
+	{
+		// Restore original terminal settings
+		if(tcsetattr(STDIN_FILENO, TCSAFLUSH, &term_orig) < 0)
+			perror("tcsetattr orig");
+	}
+
+	if(unlink_sock_path)
+	{
+		// Remove socket path
+		if(unlink(sock_path) < 0)
+			perror("unlink");
+	}
+}
+
+static void signal_exit(int signum)
+{
+	cleanup();
+
+	// Use the GNU recommended method to exit - re-raise the signal with original handler
+	// This works since SA_RESETHAND was used with the sigaction call
+	if(raise(signum) != 0)
+		perror("raise");
 }
