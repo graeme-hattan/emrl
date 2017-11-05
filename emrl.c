@@ -27,6 +27,7 @@
 
 // TODO
 // baud rate simulation in examples
+// check historic support for escape sequences above
 // more history api -> help choose what to add
 // completion
 // option to build without snprintf
@@ -119,6 +120,10 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 
 	switch(chr)
 	{
+		case '\b':
+			erase_back(p_this);
+			break;
+
 		case '\r':
 		case '\n':
 			// Ignore (unless in delim string)
