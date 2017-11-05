@@ -607,28 +607,23 @@ static inline unsigned char_to_printable(unsigned char chr, char *p_print_str)
 {
 	unsigned len;
 
+	// Use caret notation, with M- for the non-ascii range
 	if(isprint(chr))
 	{
 		*p_print_str++ = chr;
 		len = 1;
 	}
-	else
+	else if(chr < 128)
 	{
-		// Use caret notation, with M- for the non-ascii range
-		if(chr >= 128)
-		{
-			*p_print_str++ = 'M';
-			*p_print_str++ = '-';
-			chr -= 128;
-			len = 4;
-		}
-		else
-		{
-			len = 2;
-		}
-
 		*p_print_str++ = '^';
 		*p_print_str++ = (EMRL_ASCII_DEL == chr) ? ('?') : ('@' + chr);
+		len = 2;
+	}
+	else
+	{
+		*p_print_str++ = 'M';
+		*p_print_str++ = '-';
+		return 2 + char_to_printable(chr-128, p_print_str);
 	}
 	
 	*p_print_str = '\0';
