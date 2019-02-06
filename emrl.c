@@ -26,7 +26,6 @@
 #define SEQ_ERASE_TO_END "\033[K"
 
 // TODO
-// baud rate simulation in examples
 // check historic support for escape sequences above
 // more history api -> help choose what to add
 // completion
@@ -60,7 +59,7 @@ static inline void hist_show_prev(struct emrl_res *p_this);
 static inline void hist_show_next(struct emrl_res *p_this);
 static inline void hist_show_current(struct emrl_res *p_this);
 static inline void clear_from_prompt(struct emrl_res *p_this);
-static inline void copy_on_edit(struct emrl_res *p_this);
+static inline void deferred_history_copy(struct emrl_res *p_this);
 static inline unsigned char_to_printable(unsigned char chr, char *p_print_str);
 
 void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, const char *delim)
@@ -93,8 +92,6 @@ void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, c
 
 char *emrl_process_char(struct emrl_res *p_this, char chr)
 {
-	char str_buf[5];
-
 	if(emrl_esc_none != p_this->esc_state)
 	{
 		process_escape_state(p_this, chr);
@@ -106,6 +103,8 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 		++p_this->p_delim;
 		if('\0' == *p_this->p_delim)
 		{
+			deferred_history_copy(p_this);
+
 			*p_this->p_cmd_free = '\0';
 			p_this->p_delim = p_this->delim;
 			p_this->p_cursor = p_this->p_cmd_free = p_this->cmd_buf;
@@ -118,6 +117,7 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 		p_this->p_delim = p_this->delim;
 	}
 
+	char str_buf[5];
 	switch(chr)
 	{
 		case '\b':
@@ -305,7 +305,7 @@ static inline void erase_forward(struct emrl_res *p_this)
 	if(p_this->p_cursor != p_this->p_cmd_free)
 	{
 		// No - remove character under cursor
-		copy_on_edit(p_this);
+		deferred_history_copy(p_this);
 		size_t len = p_this->p_cmd_free - p_this->p_cursor;
 		(void)memmove(p_this->p_cursor, p_this->p_cursor+1, len);
 		--p_this->p_cmd_free;
@@ -322,7 +322,7 @@ static inline void erase_back(struct emrl_res *p_this)
 	// Are we at the start of the line? Don't erase the prompt!
 	if(p_this->p_cursor != p_this->cmd_buf)
 	{
-		copy_on_edit(p_this);
+		deferred_history_copy(p_this);
 
 		// Are we at the end of the line?
 		if(p_this->p_cursor == p_this->p_cmd_free)
@@ -358,7 +358,7 @@ static inline void add_string(struct emrl_res *p_this, char *p_str)
 	// Enough space in the command buffer?
 	if((p_this->p_cmd_last - p_this->p_cmd_free) > (ptrdiff_t)add_len)
 	{
-		copy_on_edit(p_this);
+		deferred_history_copy(p_this);
 
 		// Are we at the end of the line?
 		if(p_this->p_cursor == p_this->p_cmd_free)
@@ -389,7 +389,7 @@ static inline void add_string(struct emrl_res *p_this, char *p_str)
 			else
 			{
 				// Only actually happens if we are printing unknown keys or escape sequences
-				snprintf(buf, sizeof buf, "\033[%zu@", add_len);
+				(void)snprintf(buf, sizeof buf, "\033[%zu@", add_len);
 				PRINT(buf);
 				PRINT(p_str);
 			}
@@ -588,14 +588,18 @@ static inline void clear_from_prompt(struct emrl_res *p_this)
 	}
 }
 
-static inline void copy_on_edit(struct emrl_res *p_this)
+// When searching through the history, we just print the entry without copying it to the buffer.
+// If the user started typing something before searching history, this allows them to return to it.
+// However, the data needs to be copied over before editing or returning the history entry. This
+// function checks if there is data to copy, and if so, copies it.
+static inline void deferred_history_copy(struct emrl_res *p_this)
 {
 	struct emrl_history *ph = &p_this->history;
 
 	// History search active?
 	if(NULL != ph->p_current)
 	{
-		// Yes, copy current history entry to the command buffer for editing or return
+		// Yes, copy current history entry to the command buffer
 		size_t len = strlen(ph->p_current);
 		(void)memcpy(p_this->cmd_buf, ph->p_current, len);
 		if(ph->p_current + len == ph->p_buf_last)
