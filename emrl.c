@@ -48,6 +48,7 @@ static inline void process_escape_state(struct emrl_res *p_this, char chr);
 static inline void interpret_csi_escape(struct emrl_res *p_this);
 static inline void erase_forward(struct emrl_res *p_this);
 static inline void erase_back(struct emrl_res *p_this);
+static inline void move_cursor_to_end(struct emrl_res *p_this);
 static inline void add_string(struct emrl_res *p_this, char *p_str);
 #if !defined(USE_INSERT_ESCAPE_SEQUENCE) || !defined(USE_DELETE_ESCAPE_SEQUENCE)
 static inline void reprint_from_cursor(struct emrl_res *p_this, enum rp_type type, size_t back_mv);
@@ -104,6 +105,7 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 		if('\0' == *p_this->p_delim)
 		{
 			deferred_history_copy(p_this);
+			move_cursor_to_end(p_this);
 
 			*p_this->p_cmd_free = '\0';
 			p_this->p_delim = p_this->delim;
@@ -314,6 +316,17 @@ static inline void erase_forward(struct emrl_res *p_this)
 #else
 		reprint_from_cursor(p_this, rp_erase, len);
 #endif
+	}
+}
+
+static inline void move_cursor_to_end(struct emrl_res *p_this)
+{
+	ptrdiff_t to_end_len = p_this->p_cmd_free - p_this->p_cursor;
+	if(to_end_len > 0)
+	{
+		char out_buf[16];
+		(void)snprintf(out_buf, sizeof out_buf, "\033[%tdC", to_end_len);
+		PRINT(out_buf);
 	}
 }
 
