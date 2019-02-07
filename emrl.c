@@ -21,11 +21,11 @@
 #define SEQ_STEP_LEFT "\b"
 #define SEQ_DELETE_FORWARD "\033[P"
 #define SEQ_DELETE_BACK "\b\033[P"
-#define SEQ_DELETE_FROM_END "\b \b"
 #define SEQ_INSERT_SPACE "\033[@"
 #define SEQ_ERASE_TO_END "\033[K"
 
 // TODO
+// allow buffer setting
 // check historic support for escape sequences above
 // more history api -> help choose what to add
 // completion
@@ -330,7 +330,7 @@ static inline void erase_back(struct emrl_res *p_this)
 			// Yes - simple erase sequence
 			--p_this->p_cursor;
 			--p_this->p_cmd_free;
-			PRINT(SEQ_DELETE_FROM_END);
+			PRINT(SEQ_DELETE_BACK);
 		}
 		else
 		{
