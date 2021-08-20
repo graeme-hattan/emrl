@@ -211,7 +211,7 @@ static inline void parse_args(struct setup *p_setup, int argc, char *argv[])
 	if(usage || optind < argc)
 	{
 		const char *prog_path = (argc > 0) ? argv[0] : "posix";
-		(void)fprintf(stderr, "usage: %s: [-p | -s [socket_path]]\n", prog_path);
+		(void)fprintf(stderr, "usage: %s: [-b <baud[K]]> [-p | -s [socket_path]]\n", prog_path);
 		exit(EXIT_FAILURE);
 	}
 }

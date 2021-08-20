@@ -25,6 +25,9 @@
 #define SEQ_ERASE_TO_END "\033[K"
 
 // TODO
+// don't assume ascii character encoding, esp using \b above
+// handle CSI escapes introduced by 0x9b
+// ensure CSI parameters <= 255
 // allow buffer setting
 // check historic support for escape sequences above
 // more history api -> help choose what to add
@@ -149,7 +152,7 @@ char *emrl_process_char(struct emrl_res *p_this, char chr)
 }
 
 
-void emrl_add_to_history(struct emrl_res *p_this, char *p_command)
+void emrl_add_to_history(struct emrl_res *p_this, const char *p_command)
 {
 	struct emrl_history *ph = &p_this->history;
 	size_t cmd_len = strlen(p_command) + 1;

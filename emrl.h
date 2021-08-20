@@ -58,6 +58,6 @@ struct emrl_res
 
 void emrl_init(struct emrl_res *p_this, emrl_fputs_func fputs, emrl_file file, const char *delim);
 char *emrl_process_char(struct emrl_res *p_this, char chr);
-void emrl_add_to_history(struct emrl_res *p_this, char *p_command);
+void emrl_add_to_history(struct emrl_res *p_this, const char *p_command);
 
 #endif	/* EMRL_H */
