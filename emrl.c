@@ -496,6 +496,7 @@ static inline char *hist_search_backward(struct emrl_res *p_this, char *p_entry)
 {
 	assert(p_entry > p_this->history.buf);
 	assert(p_entry < p_this->history.p_buf_last);
+	assert(p_this->history.p_buf_last == sizeof p_this->history.buf - 1);
 
 	// Is the entry at the start of the buffer?
 	if(p_entry-1 == p_this->history.buf)
