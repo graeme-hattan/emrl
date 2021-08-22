@@ -52,7 +52,7 @@ static inline void interpret_csi_escape(struct emrl_res *p_this);
 static inline void erase_forward(struct emrl_res *p_this);
 static inline void erase_back(struct emrl_res *p_this);
 static inline void move_cursor_to_end(struct emrl_res *p_this);
-static inline void add_string(struct emrl_res *p_this, char *p_str);
+static inline void add_string(struct emrl_res *p_this, const char *p_str);
 #if !defined(USE_INSERT_ESCAPE_SEQUENCE) || !defined(USE_DELETE_ESCAPE_SEQUENCE)
 static inline void reprint_from_cursor(struct emrl_res *p_this, enum rp_type type, size_t back_mv);
 #endif
@@ -367,7 +367,7 @@ static inline void erase_back(struct emrl_res *p_this)
 	}
 }
 
-static inline void add_string(struct emrl_res *p_this, char *p_str)
+static inline void add_string(struct emrl_res *p_this, const char *p_str)
 {
 	size_t add_len = strlen(p_str);
 
@@ -453,7 +453,7 @@ static inline void reset_esc(struct emrl_res *p_this, bool known)
 		// plus null terminator
 		char str_buf[4 * (sizeof p_this->esc_buf) + 3];
 		char *p_str = str_buf + 2;
-		char *p_esc_tmp = p_this->esc_buf;
+		const char *p_esc_tmp = p_this->esc_buf;
 
 		// ESC character not in escape buffer, add manually
 		str_buf[0] = '^';
@@ -494,13 +494,15 @@ static inline char *hist_search_forward(struct emrl_res *p_this, char *p_entry)
 
 static inline char *hist_search_backward(struct emrl_res *p_this, char *p_entry)
 {
-	assert(p_entry > p_this->history.buf);
-	assert(p_entry < p_this->history.p_buf_last);
-	assert(p_this->history.p_buf_last == sizeof p_this->history.buf - 1);
+	struct emrl_history *ph = &p_this->history;
+
+	assert(p_entry > ph->buf);
+	assert(p_entry < ph->p_buf_last);
+	assert(ph->p_buf_last == (ph->buf + sizeof ph->buf - 1));
 
 	// Is the entry at the start of the buffer?
-	if(p_entry-1 == p_this->history.buf)
-		p_entry = p_this->history.p_buf_last - 2;	// Previous null at end, start before it
+	if(p_entry-1 == ph->buf)
+		p_entry = ph->p_buf_last - 2;				// Previous null at end, start before it
 	else
 		p_entry -= 2;								// Go back past null of previous entry
 
@@ -508,16 +510,16 @@ static inline char *hist_search_backward(struct emrl_res *p_this, char *p_entry)
 		--p_entry;
 
 	// Hit start of buffer? Keep searching from end
-	if(p_entry == p_this->history.buf)
+	if(p_entry == ph->buf)
 	{
-		p_entry = p_this->history.p_buf_last - 1;
+		p_entry = ph->p_buf_last - 1;
 		while('\0' != *p_entry)
 			--p_entry;
 	}
 
 	// Entry starts after the null
-	if(++p_entry == p_this->history.p_buf_last)
-		p_entry = p_this->history.buf + 1;
+	if(++p_entry == ph->p_buf_last)
+		p_entry = ph->buf + 1;
 		
 	return p_entry;
 }
@@ -576,7 +578,7 @@ static inline void hist_show_next(struct emrl_res *p_this)
 
 static inline void hist_show_current(struct emrl_res *p_this)
 {
-	struct emrl_history *ph = &p_this->history;
+	const struct emrl_history *ph = &p_this->history;
 
 	assert(NULL != ph->p_current);
 
@@ -642,7 +644,7 @@ static inline unsigned char_to_printable(unsigned char chr, char *p_print_str)
 	else if(chr < 128)
 	{
 		*p_print_str++ = '^';
-		*p_print_str++ = (EMRL_ASCII_DEL == chr) ? ('?') : ('@' + chr);
+		*p_print_str++ = (EMRL_ASCII_DEL == chr) ? '?' : ('@' + chr);
 		len = 2;
 	}
 	else

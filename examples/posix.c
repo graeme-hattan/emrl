@@ -97,32 +97,32 @@ int main(int argc, char *argv[])
 	int out_fd;
 	switch(setup.mode)
 	{
-		case mode_local:
-			// Play nice with redirected io, useful for testing
-			in_fd = STDIN_FILENO;
-			out_fd = STDOUT_FILENO;
-			if(isatty(in_fd))
-				configure_tty(in_fd);
+    case mode_local:
+        // Play nice with redirected io, useful for testing
+        in_fd = STDIN_FILENO;
+        out_fd = STDOUT_FILENO;
+        if(isatty(in_fd))
+            configure_tty(in_fd);
 
-			break;
-		
-		case mode_pty:
-			in_fd = out_fd = setup_pty();
-			configure_tty(in_fd);
-			break;
+        break;
+    
+    case mode_pty:
+        in_fd = out_fd = setup_pty();
+        configure_tty(in_fd);
+        break;
 
-		case mode_socket:
-			in_fd = out_fd = setup_socket();
+    case mode_socket:
+        in_fd = out_fd = setup_socket();
 
-			// Put the file descriptor into non-blocking mode
-			if(0 != fcntl(in_fd, F_SETFL, O_NONBLOCK))
-				perror_exit("fcntl(in_fd)");
+        // Put the file descriptor into non-blocking mode
+        if(0 != fcntl(in_fd, F_SETFL, O_NONBLOCK))
+            perror_exit("fcntl(in_fd)");
 
-			break;
+        break;
 
-		default:
-			assert(false);
-			return EXIT_FAILURE;
+    default:
+        assert(false);
+        return EXIT_FAILURE;
 	}
 
 	sigset_t signal;
@@ -162,7 +162,7 @@ static inline void parse_args(struct setup *p_setup, int argc, char *argv[])
 	bool usage = false;
 
 	// Colon at the start of the opt string allows detection of missing option arguments
-	while(!usage && (opt = getopt(argc, argv, ":b:ps:")) != -1)
+	while((opt = getopt(argc, argv, ":b:ps:")) != -1 && !usage)
 	{
 		// If argument is missing we get a colon for opt and option is in optopt
 		bool missing_arg = (opt == ':');
@@ -171,40 +171,39 @@ static inline void parse_args(struct setup *p_setup, int argc, char *argv[])
 
 		switch(opt)
 		{
-			default:
-			case '?':
-				usage = true;
-				break;
+        case 'b':
+            if(missing_arg)
+            {
+                usage = true;
+            }
+            else
+            {
+                p_setup->baud = strtod(optarg, &optarg);
+                if('k' == *optarg || 'K' == *optarg)
+                {
+                    p_setup->baud *= 1000.0;
+                    ++optarg;
+                }
 
-			case 'b':
-				if(missing_arg)
-				{
-					usage = true;
-				}
-				else
-				{
-					p_setup->baud = strtod(optarg, &optarg);
-					if('k' == *optarg || 'K' == *optarg)
-					{
-						p_setup->baud *= 1000.0;
-						++optarg;
-					}
+                // Put some limits on the baud rate
+                usage = ('\0' != *optarg || p_setup->baud < 0.01 || p_setup->baud > 1e6);
+            }
 
-					// Put some limits on the baud rate
-					usage = ('\0' != *optarg || p_setup->baud < 0.01 || p_setup->baud > 1e6);
-				}
+            break;
 
-				break;
+        case 'p':
+            p_setup->mode = mode_pty;
+            break;
 
-			case 'p':
-				p_setup->mode = mode_pty;
-				break;
+        case 's':
+            p_setup->mode = mode_socket;
+            if(!missing_arg)
+                sock_path = optarg;
+            break;
 
-			case 's':
-				p_setup->mode = mode_socket;
-				if(!missing_arg)
-					sock_path = optarg;
-				break;
+        default:
+            usage = true;
+            break;
 		}
 	}
 
@@ -486,7 +485,7 @@ static inline bool feed_emrl(int fd, struct emrl_res *p_emrl)
 	if(EOT == chr && STDIN_FILENO == fd)
 		return true;
 
-	char *p_command = emrl_process_char(p_emrl, chr);
+	const char *p_command = emrl_process_char(p_emrl, chr);
 
 	// Return early if there is no command to process
 	if(NULL == p_command)
